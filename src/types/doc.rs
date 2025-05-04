@@ -30,12 +30,6 @@ pub struct Doc {
 
 impl Doc {
 
-    pub fn testing() -> i32 {
-        println!("This is a test!");
-        let x = 0;
-        x
-    }
-
     /// Builds the `Writer` struct and registers pre-provided fonts, outputs a finished PDF
     pub fn render(&mut self) {
         let mut pdf = Pdf::new();
