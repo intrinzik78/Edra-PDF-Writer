@@ -30,7 +30,182 @@ pub struct Doc {
 
 impl Doc {
 
-    /// Builds the `Writer` struct and registers pre-provided fonts, outputs a finished PDF
+    /// applies an offset to each line of text based on the JSON `textAlign` field
+    fn apply_text_alignment(text_block: &mut TextBlock, writeable_area: f32) {
+
+        match text_block.alignment {
+            TextAlignment::Left => {},
+            TextAlignment::Center => {
+                for line in &mut text_block.lines {
+                    line.offset = Doc::offset_center(line.width, writeable_area);
+                }
+            },
+            TextAlignment::Right => {
+                for line in &mut text_block.lines {
+                    line.offset = Doc::offset_right_justify(line.width, writeable_area);
+                }
+            },
+            TextAlignment::Justify => {
+                let list_length = text_block.lines.len();
+
+                if list_length > 2 {
+                    for index in 0..(list_length -1) {
+                        let line = {
+                            match text_block.lines.get_mut(index) {
+                                Some(line) => line,
+                                None => { return }
+                            }
+                        };
+
+                        if line.body.len() > 2 {
+                            let offset = (writeable_area - line.width) / (line.body.len()-1) as f32;
+
+                            for word in &mut line.body {
+                                word.offset += offset;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// helper function for lists, returns the first text node in a content block
+    fn find_first_text_node_mut (list: &mut [ContentField]) -> Option<&mut String> {
+        for node in list {
+            if let Some(text) = node.text.as_mut() {
+                return Some(text);
+            }
+            if let Some(children) = node.content.as_mut() {
+                if let Some(text) = Doc::find_first_text_node_mut(children) {
+                    return Some(text);
+                }
+            }
+        }
+
+        None
+    }
+    
+    /// returns the base font `Style` for a text block
+    fn get_block_font_style(block: &ContentField) -> Style {
+        let mut current_style = Style::Normal;
+
+        if let Some(styles) = &block.style {
+            let mut style_list: Vec<Style> = Vec::new();
+
+            for style_opt in styles {
+                if let Some(name) = style_opt.name() {
+                    style_list.push(name);
+                }
+            }
+
+            // compiled styles defined
+            current_style = match style_list.contains(&Style::Bold) & style_list.contains(&Style::Italic) {
+                true => Style::BoldItalic,
+                false => {
+                    if style_list.contains(&Style::Bold) {
+                         Style::Bold
+                    } else if style_list.contains(&Style::Italic) { 
+                        Style::Italic
+                    } else {
+                        current_style
+                    }
+                }
+            };
+
+            if style_list.contains(&Style::Underline) {
+                current_style =match current_style {
+                    Style::Bold => Style::BoldUnderline,
+                    Style::Italic => Style::ItalicUnderline,
+                    Style::Normal => Style::Underline,
+                    Style::BoldItalic => Style::BoldItalicUnderline,
+                    _ => current_style
+                }
+            }
+
+            if style_list.contains(&Style::Strikethrough) {
+                current_style =match current_style {
+                    Style::Bold => Style::BoldStrikethrough,
+                    Style::Italic => Style::ItalicStrikethrough,
+                    Style::Normal => Style::BoldItalicStrikethrough,
+                    Style::BoldItalic => Style::Strikethrough,
+                    _ => current_style
+                }
+            }
+
+        }
+
+        current_style
+    }
+
+    /// returns nested `AattributeField` for a block or section
+    fn get_block_attributes(block: &ContentField) -> Option<&AttributeField> {
+        if let Some(style_list) = &block.style {
+            let list_length = style_list.len();
+
+            for index in 0..list_length {
+                if let Some(style) = style_list.get(index) {
+                    if let Some(attribute) = &style.attributes {
+                        return Some(attribute);
+                    }
+                } else {
+                    continue
+                }
+            }
+        }
+
+        None
+    }
+
+    fn get_block_text_alignment(block: &ContentField) -> TextAlignment {
+        block
+            .attributes
+            .as_ref()
+            .and_then(|attribute_field| attribute_field.text_align.as_ref())
+            .map(|text_alignment| match text_alignment.as_str() {
+                "left" => TextAlignment::Left,
+                "right" => TextAlignment::Right,
+                "center" => TextAlignment::Center,
+                "justify" => TextAlignment::Justify,
+                _ => TextAlignment::Left
+            })
+            .unwrap_or(TextAlignment::Left)
+    }
+
+    /// needs a rename to 'get_header_font_size'
+    fn get_block_font_size(block: &ContentField) -> f32 {
+        block
+            .attributes
+            .as_ref()
+            .and_then(|attribute_field| attribute_field.level)
+            .map(|level| match level {
+                1 => 16.0,
+                2 => 15.0,
+                3 => 14.0,
+                _ => 12.0,
+            })
+            .unwrap_or(12.0)
+    }
+
+    /// calculates the offset required to center a line
+    fn offset_center(phrase_width: f32, writeable_area: f32) -> f32 {
+        if phrase_width < writeable_area {
+            (writeable_area - phrase_width) / 2.0
+        } else {
+            0.0
+        }
+    }
+
+    /// calculates the offset required to right justify a line
+    fn offset_right_justify(phrase_width: f32, writeable_area: f32) -> f32 {
+        if phrase_width < writeable_area {
+            writeable_area - phrase_width
+        } else {
+            0.0
+        }
+    }
+
+    /// Entry point: builds the `Writer` struct and registers pre-provided fonts, outputs a finished PDF
     pub fn render(&mut self) {
         let mut pdf = Pdf::new();
         let mut secondary = Chunk::new();
@@ -120,22 +295,16 @@ impl Doc {
         let _ = std::fs::write("./chunks.pdf", pdf.finish());
     }
 
-    /// calculates the offset required to center a line
-    fn offset_center(phrase_width: f32, writeable_area: f32) -> f32 {
-        if phrase_width < writeable_area {
-            (writeable_area - phrase_width) / 2.0
-        } else {
-            0.0
-        }
+    /// calls `render_text_block` method with no line indent
+    fn render_heading(write_head: &mut Writer, block: &mut ContentField) {
+        let indent: f32 = 0.0;
+        Doc::render_text_block(write_head, block, indent);
     }
 
-    /// calculates the offset required to right justify a line
-    fn offset_right_justify(phrase_width: f32, writeable_area: f32) -> f32 {
-        if phrase_width < writeable_area {
-            writeable_area - phrase_width
-        } else {
-            0.0
-        }
+    /// calls `render_text_block` method with no line indent
+    fn render_paragraph(write_head: &mut Writer, block: &mut ContentField) {
+        let indent: f32 = 0.0;
+        Doc::render_text_block(write_head, block, indent);
     }
 
     /// accepts a block, inserts the list number for each list item and calls `render_text_block()`
@@ -167,173 +336,6 @@ impl Doc {
                 }
             }
         }
-    }
-
-    /// helper function for lists, returns the first text node in a content block
-    fn find_first_text_node_mut (list: &mut [ContentField]) -> Option<&mut String> {
-        for node in list {
-            if let Some(text) = node.text.as_mut() {
-                return Some(text);
-            }
-            if let Some(children) = node.content.as_mut() {
-                if let Some(text) = Doc::find_first_text_node_mut(children) {
-                    return Some(text);
-                }
-            }
-        }
-
-        None
-    }
-    
-    /// returns the base font `Style` for a text block
-    fn get_block_font_style(block: &ContentField) -> Style {
-        let mut current_style = Style::Normal;
-
-        if let Some(styles) = &block.style {
-            let mut style_list: Vec<Style> = Vec::new();
-
-            for style_opt in styles {
-                if let Some(name) = style_opt.name() {
-                    style_list.push(name);
-                }
-            }
-
-            // compiled styles defined
-            current_style = match style_list.contains(&Style::Bold) & style_list.contains(&Style::Italic) {
-                true => Style::BoldItalic,
-                false => {
-                    if style_list.contains(&Style::Bold) {
-                         Style::Bold
-                    } else if style_list.contains(&Style::Italic) { 
-                        Style::Italic
-                    } else {
-                        current_style
-                    }
-                }
-            };
-
-            if style_list.contains(&Style::Underline) {
-                current_style =match current_style {
-                    Style::Bold => Style::BoldUnderline,
-                    Style::Italic => Style::ItalicUnderline,
-                    Style::Normal => Style::Underline,
-                    Style::BoldItalic => Style::BoldItalicUnderline,
-                    _ => current_style
-                }
-            }
-
-            if style_list.contains(&Style::Strikethrough) {
-                current_style =match current_style {
-                    Style::Bold => Style::BoldStrikethrough,
-                    Style::Italic => Style::ItalicStrikethrough,
-                    Style::Normal => Style::BoldItalicStrikethrough,
-                    Style::BoldItalic => Style::Strikethrough,
-                    _ => current_style
-                }
-            }
-
-        }
-
-        current_style
-    }
-
-    fn get_block_attributes(block: &ContentField) -> Option<&AttributeField> {
-        if let Some(style_list) = &block.style {
-            let list_length = style_list.len();
-
-            for index in 0..list_length {
-                if let Some(style) = style_list.get(index) {
-                    if let Some(attribute) = &style.attributes {
-                        return Some(attribute);
-                    }
-                } else {
-                    continue
-                }
-            }
-        }
-
-        None
-    }
-
-    fn get_block_text_alignment(block: &ContentField) -> TextAlignment {
-        block
-            .attributes
-            .as_ref()
-            .and_then(|attribute_field| attribute_field.text_align.as_ref())
-            .map(|text_alignment| match text_alignment.as_str() {
-                "left" => TextAlignment::Left,
-                "right" => TextAlignment::Right,
-                "center" => TextAlignment::Center,
-                "justify" => TextAlignment::Justify,
-                _ => TextAlignment::Left
-            })
-            .unwrap_or(TextAlignment::Left)
-    }
-
-    fn get_block_font_size(block: &ContentField) -> f32 {
-        block
-            .attributes
-            .as_ref()
-            .and_then(|attribute_field| attribute_field.level)
-            .map(|level| match level {
-                1 => 16.0,
-                2 => 15.0,
-                3 => 14.0,
-                _ => 12.0,
-            })
-            .unwrap_or(12.0)
-    }
-
-    /// applies an offset to each line of text based on the JSON `textAlign` field
-    fn apply_text_alignment(text_block: &mut TextBlock, writeable_area: f32) {
-
-        match text_block.alignment {
-            TextAlignment::Left => {},
-            TextAlignment::Center => {
-                for line in &mut text_block.lines {
-                    line.offset = Doc::offset_center(line.width, writeable_area);
-                }
-            },
-            TextAlignment::Right => {
-                for line in &mut text_block.lines {
-                    line.offset = Doc::offset_right_justify(line.width, writeable_area);
-                }
-            },
-            TextAlignment::Justify => {
-                let list_length = text_block.lines.len();
-
-                if list_length > 2 {
-                    for index in 0..(list_length -1) {
-                        let line = {
-                            match text_block.lines.get_mut(index) {
-                                Some(line) => line,
-                                None => { return }
-                            }
-                        };
-
-                        if line.body.len() > 2 {
-                            let offset = (writeable_area - line.width) / (line.body.len()-1) as f32;
-
-                            for word in &mut line.body {
-                                word.offset += offset;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// calls `render_text_block` method with no line indent
-    fn render_heading(write_head: &mut Writer, block: &mut ContentField) {
-        let indent: f32 = 0.0;
-        Doc::render_text_block(write_head, block, indent);
-    }
-
-    /// calls `render_text_block` method with no line indent
-    fn render_paragraph(write_head: &mut Writer, block: &mut ContentField) {
-        let indent: f32 = 0.0;
-        Doc::render_text_block(write_head, block, indent);
     }
 
     /// accepts any block with a `content` field containing a `text` field`, then assembles each line of text and calls `.write()` method on the `Writer`
