@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use pdf_writer::{Chunk, Content, Name, Pdf, Rect };
+use pdf_writer::{Chunk, Content, Finish, Name, Pdf, Rect, TextStr };
 use crate::{
     traits::FontType, 
     types::{ 
@@ -211,6 +211,7 @@ impl Doc {
         let mut secondary = Chunk::new();
         let mut write_head = Writer::default();
 
+
         let page_tree_id = write_head.bump();
 
         let times_normal = FontReference {
@@ -274,7 +275,51 @@ impl Doc {
                     }
                 }
             }
+
+
+            {
+
+                let first_page_id_option = match write_head.pages.get(0) {
+                    Some(page) => Some(page.page_id),
+                    None => None
+                };
+
+                if let Some(first_page_id) = first_page_id_option {
+                    let annot_key = Name(b"Type");
+                    let annot_value = TextStr("Annot");
+                    let widget_key = Name(b"SubType");
+                    let widget_value = TextStr("Widget");
+                    let field_key = Name(b"Sig");
+                    let field_value = TextStr("Signature1");
+                    let rect_key = Name(b"Rect");
+                    let rect_value = Rect::new(0.0,0.0,100.0,100.0);
+    
+                    let sig_field_id = write_head.bump();
+                    let sig_annot_id = write_head.bump();
+                    let acroform_id  = write_head.bump();
+
+    
+                    let mut field = pdf.form_field(sig_annot_id);
+                    field.parent(first_page_id);
+                    field.pair(annot_key, annot_value);
+                    field.pair(widget_key, widget_value);
+                    field.pair(field_key, field_value);
+                    field.field_type(pdf_writer::types::FieldType::Signature);
+                    field.text_value(TextStr("etst"));
+                    field.partial_name(TextStr("Signature1"));
+                    field.pair(rect_key, rect_value);
+                    field.finish();
+
+                } else {
+                    println!("missing page_id");
+                }
+
+
+                
+            }
         }
+
+        
 
         // append footer to each page
 
