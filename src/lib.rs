@@ -14,13 +14,15 @@
 //! - [X] Strikethrough
 //! - [X] Underline
 //! - [X] Header size (H1,H2,H3)
-//! - [ ] Body font size (tiny - extra large)
-//! - [ ] Additional use of embedded font families
-//! - [ ] Text color
-//! - [ ] Text background highlight
-//! - [ ] Link annotation
-//! - [ ] Superscript
-//! - [ ] Subscript
+//! - [ ] Digital signatures (0.2.0)
+//! - [ ] Encryption (0.2.0)
+//! - [ ] Body font size (tiny - extra large) (0.3.0)
+//! - [ ] Additional use of embedded font families (0.4.0)
+//! - [ ] Text color (0.5.0)
+//! - [ ] Text background highlight (0.5.0)
+//! - [ ] Link annotation (0.6.0)
+//! - [ ] Superscript (0.7.0)
+//! - [ ] Subscript (0.8.0)
 //! 
 //! ## Links
 //! PDF Writer:

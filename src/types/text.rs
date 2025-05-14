@@ -21,7 +21,8 @@ pub struct TextBlock<'a> {
     pub font_size: f32,
     // keeps track of which `Line` is currently being pushed to by `Doc::render_text_block()`
     pub index: usize,
-    pub indent: f32
+    pub indent: f32,
+    pub post_block_offset: f32
 }
 
 impl TextBlock<'_> {
@@ -102,7 +103,8 @@ impl Default for TextBlock<'_> {
             font_family: FontFamily::TimesRoman,
             lines: Vec::from([line]),
             index: 0,
-            indent: 0.0
+            indent: 0.0,
+            post_offset: 0.0
         }
     }
 }

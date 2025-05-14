@@ -107,9 +107,12 @@ impl Writer <'_> {
         }
 
         for line in text_block.lines.iter() {
-            // a `Line`` object can't have empty text
-            // if it is, there is likely a bug in `Doc::render_text_block()`
-            debug_assert!(line.body.is_empty() == false);
+
+            // line break
+            if line.body.is_empty() {
+                self.y -= 1.5 * text_block.font_size;
+                continue;
+            }
 
             self.x = 0.0;
             self.x += block_indent;
@@ -136,6 +139,8 @@ impl Writer <'_> {
                         // a `Word`` object can't have empty text
                         // if it is, there is likely a bug in `Doc::render_text_block()`
                         debug_assert!(word.text.is_empty() == false);
+                        debug_assert!(self.x >= self.page_margin);
+                        debug_assert!(self.x <= self.page_width - self.page_margin);
 
                         match word.font_style {
                             Style::Normal => if let Some(ref_obj) = font_map.get("times-normal") { target.set_font(ref_obj.name, text_block.font_size); },
@@ -156,8 +161,6 @@ impl Writer <'_> {
                         target.next_line(word.width + word.offset, 0.0);
 
                         self.x += word.width + word.offset;
-                        debug_assert!(self.x >= self.page_margin);
-                        debug_assert!(self.x <= self.page_width - self.page_margin);
                     }
 
                     let ending_index = self.x;
@@ -174,6 +177,9 @@ impl Writer <'_> {
                     let mut last_offset = 0.0;
 
                     for word in &line.body {
+                        debug_assert!(self.x >= self.page_margin);
+                        debug_assert!(self.x <= self.page_width - self.page_margin);
+
                         match word.font_style {
                             Style::Underline => {
                                 if !underline_flag {
@@ -244,13 +250,10 @@ impl Writer <'_> {
 
                         self.x += word.offset;
                         self.x += word.width;
-
-                        debug_assert!(self.x >= self.page_margin);
-                        debug_assert!(self.x <= self.page_width - self.page_margin);
                     }
 
                     if underline_flag {
-                    underline_points.push(self.x - last_offset);
+                        underline_points.push(self.x - last_offset);
                     }
 
                     if strikethrough_flag {
@@ -283,13 +286,7 @@ impl Writer <'_> {
 
                     target.move_to(ending_index, self.y);
 
-                    self.x += 0.0 + self.page_margin;
                     self.y -= text_block.font_size * 1.5;
-
-                    debug_assert!(self.x >= self.page_margin);
-                    debug_assert!(self.x <= self.page_width - self.page_margin);
-                    debug_assert!(self.y >= self.page_margin);
-                    debug_assert!(self.y <= self.page_height - self.page_margin);
 
                     target.stroke();
                     target.end_text();
