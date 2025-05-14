@@ -104,7 +104,7 @@ impl Default for TextBlock<'_> {
             lines: Vec::from([line]),
             index: 0,
             indent: 0.0,
-            post_offset: 0.0
+            post_block_offset: 0.0
         }
     }
 }
