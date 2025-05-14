@@ -343,13 +343,15 @@ impl Doc {
     /// calls `render_text_block` method with no line indent
     fn render_heading(write_head: &mut Writer, block: &mut ContentField) {
         let indent: f32 = 0.0;
-        Doc::render_text_block(write_head, block, indent);
+        let post_block_offset = 0.0;
+        Doc::render_text_block(write_head, block, indent, post_block_offset);
     }
 
     /// calls `render_text_block` method with no line indent
     fn render_paragraph(write_head: &mut Writer, block: &mut ContentField) {
         let indent: f32 = 0.0;
-        Doc::render_text_block(write_head, block, indent);
+        let post_block_offset = 0.0;
+        Doc::render_text_block(write_head, block, indent, post_block_offset);
     }
 
     /// accepts a block, inserts the list number for each list item and calls `render_text_block()`
@@ -375,8 +377,8 @@ impl Doc {
                     }
 
                     for child in children {
-                        Doc::render_text_block(write_head, child, indent);
-                        write_head.feed(20.0);
+                        let post_block_offset: f32 = font_size * 1.5;
+                        Doc::render_text_block(write_head, child, indent, post_block_offset);
                     }
                 }
             }
@@ -389,7 +391,7 @@ impl Doc {
     /// - creates `Word` containers
     /// - assembles the content into a `TextBlock` container
     /// - calls the `.write()` method with an assembled `TextBlock`
-    fn render_text_block(write_head: &mut Writer, block: &ContentField, indent: f32) {
+    fn render_text_block(write_head: &mut Writer, block: &ContentField, indent: f32, post_block_offset: f32) {
 
         if let Some(content) = &block.content {
 
@@ -409,12 +411,6 @@ impl Doc {
 
             // iterate through each sub-section of a block assembling `TextBlock` objects and pushing them to the `Writer` for rendering to the `Content` chunk
             for section in content {
-
-                // a line break is a special case with no `text` field, but appears as a sub-section of a block level `content` field
-                if section.block_type == BlockType::Break {
-                    write_head.feed(font_size);
-                    continue;
-                }
 
                 // get the `text` field
                 if let Some(text_string) = &section.text {
@@ -438,21 +434,7 @@ impl Doc {
                             
                             // check if line will fit within the vertical margins of a visible page & create new `Page` when necessary
                             if write_head.y - (font_size * 1.5) < write_head.page_margin {
-                                let new_page_id = write_head.bump();
-                                let new_content_id = write_head.bump();
-                                let new_content = Content::new();
-                                let page_content = PageContent {
-                                    content_id: new_content_id,
-                                    content: new_content
-                                };
-                
-                                write_head.pages.push(Page {
-                                    page_id: new_page_id, 
-                                    contents: Vec::from([page_content])
-                                });
-                
-                                write_head.current_page = Some(new_page_id);
-                                write_head.y = write_head.page_height - write_head.page_margin;
+                                Doc::build_new_page(write_head);
                             }
 
                             // build a new line and get a pointer to it
@@ -473,7 +455,17 @@ impl Doc {
                         line.body.push(word);
                     }
                 } else {
-                    todo!("should be unreachable");
+                    // executes when no text field found
+                    let font_size = Doc::get_block_font_size(block);
+                    let text_block = TextBlock::new()
+                        .with_font_size(font_size);
+
+                    // check if line will fit within the vertical margins of a visible page & create new `Page` when necessary
+                    if write_head.y - (font_size * 1.5) < write_head.page_margin {
+                        Doc::build_new_page(write_head);
+                    }
+
+                    write_head.write(text_block);
                 }
             }
 
@@ -481,8 +473,38 @@ impl Doc {
 
             write_head.write(text_block);
         } else {
-            write_head.feed(12.0);
+            // executes when no content field found
+            let font_size = Doc::get_block_font_size(block);
+            let text_block = TextBlock::new()
+                .with_font_size(font_size);
+
+            // check if line will fit within the vertical margins of a visible page & create new `Page` when necessary
+            if write_head.y - (font_size * 1.5) < write_head.page_margin {
+                Doc::build_new_page(write_head);
+            }
+
+            write_head.write(text_block);
         }
+
+        write_head.feed(post_block_offset);
+    }
+
+    fn build_new_page(write_head: &mut Writer) {
+        let new_page_id = write_head.bump();
+        let new_content_id = write_head.bump();
+        let new_content = Content::new();
+        let page_content = PageContent {
+            content_id: new_content_id,
+            content: new_content
+        };
+
+        write_head.pages.push(Page {
+            page_id: new_page_id, 
+            contents: Vec::from([page_content])
+        });
+
+        write_head.current_page = Some(new_page_id);
+        write_head.y = write_head.page_height - write_head.page_margin;
     }
 
     /// helper method for `render_text_block`
