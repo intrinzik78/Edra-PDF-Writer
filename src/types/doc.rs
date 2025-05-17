@@ -1,5 +1,7 @@
+use lopdf::{Document, Object, Dictionary, Stream, dictionary};
+use pdf_writer::{ Chunk, Content, Name, Pdf, Rect };
 use serde::Deserialize;
-use pdf_writer::{Chunk, Content, Finish, Name, Pdf, Rect, TextStr };
+
 use crate::{
     traits::FontType, 
     types::{ 
@@ -29,6 +31,62 @@ pub struct Doc {
 }
 
 impl Doc {
+
+    pub fn add_sig_placeholder(buf: Vec<u8>) -> Vec<u8> {
+        let mut doc = Document::load_mem(&buf).unwrap();
+        let page_id_map = doc.get_pages();   
+        let page_id = page_id_map.get(&1).unwrap();  
+        let max_id = doc.max_id + 1;
+        let sig_dict_id   = max_id;
+        let widget_id     = max_id + 1;
+        let acroform_id   = max_id + 2;  
+        let placeholder_len = 8192; // bytes
+        let empty_contents = vec![0u8; placeholder_len];
+        let sig_dict = dictionary! {
+            "Type" => Object::Name(b"Sig".to_vec()),
+            "Filter" => Object::Name(b"Adobe.PPKLite".to_vec()),
+            "SubFilter" => Object::Name(b"adbe.pkcs7.detached".to_vec()),
+            "ByteRange" => Object::Array(vec![0.into(), 0.into(), 0.into(), 0.into()]),
+            // Contents must be hex‐string: lopdf uses Streams for binary data
+            // but for simplicity you can store as a literal string of zeros and patch later
+            "Contents" => Object::String(empty_contents, lopdf::StringFormat::Hexadecimal),
+            "Reason" => Object::String(b"User accepted terms".to_vec(), lopdf::StringFormat::Literal),
+            "M"      => Object::String(b"D:20250514120000Z".to_vec(), lopdf::StringFormat::Literal),
+        };
+        
+        doc.objects.insert((sig_dict_id,0), Object::Dictionary(sig_dict));   
+        let widget_dict = dictionary! {
+            "Type"   => Object::Name(b"Annot".to_vec()),
+            "Subtype"=> Object::Name(b"Widget".to_vec()),
+            "FT"     => Object::Name(b"Sig".to_vec()),
+            "Rect"   => Object::Array(vec![0.into(),0.into(),0.into(),0.into()]),
+            "F"      => <i32 as Into<Object>>::into(1),
+            "V"      => Object::Reference((sig_dict_id, 0)),
+            // link to the page object; assume your page is object 3
+            "P"      => Object::Reference((page_id.0, 0)),
+        };
+        doc.objects.insert((widget_id,0), Object::Dictionary(widget_dict));  
+        let acroform_dict = dictionary! {
+            "SigFlags" => <i32 as Into<Object>>::into(3),
+            "Fields"   => Object::Array(vec![Object::Reference((widget_id,0))]),
+        };
+        doc.objects.insert((acroform_id,0), Object::Dictionary(acroform_dict));  
+        let catalog_id = doc.trailer.get(b"Root")
+            .and_then(Object::as_reference)
+            .unwrap();
+        if let Object::Dictionary(ref mut catalog) = doc.objects.get_mut(&catalog_id).unwrap() {
+            catalog.set("AcroForm", Object::Reference((acroform_id,0)));
+        }
+        
+        let mut buf = Vec::new();
+
+        match doc.save_to(&mut buf) {
+            Ok(_) => {},
+            Err(e) => panic!("{e}")
+        };
+
+         buf
+    }
 
     /// applies an offset to each line of text based on the JSON `textAlign` field
     fn apply_text_alignment(text_block: &mut TextBlock, writeable_area: f32) {
@@ -206,12 +264,13 @@ impl Doc {
     }
 
     /// Entry point: builds the `Writer` struct and registers pre-provided fonts, outputs a finished PDF
-    pub fn render(&mut self) {
+    pub fn render(&mut self) -> Vec<u8> {
         let mut pdf = Pdf::new();
         let mut secondary = Chunk::new();
         let mut write_head = Writer::default();
 
 
+        let catalog_id = write_head.bump();
         let page_tree_id = write_head.bump();
 
         let times_normal = FontReference {
@@ -275,51 +334,79 @@ impl Doc {
                     }
                 }
             }
-
-
-            {
-
-                let first_page_id_option = match write_head.pages.get(0) {
-                    Some(page) => Some(page.page_id),
-                    None => None
-                };
-
-                if let Some(first_page_id) = first_page_id_option {
-                    let annot_key = Name(b"Type");
-                    let annot_value = TextStr("Annot");
-                    let widget_key = Name(b"SubType");
-                    let widget_value = TextStr("Widget");
-                    let field_key = Name(b"Sig");
-                    let field_value = TextStr("Signature1");
-                    let rect_key = Name(b"Rect");
-                    let rect_value = Rect::new(0.0,0.0,100.0,100.0);
-    
-                    let sig_field_id = write_head.bump();
-                    let sig_annot_id = write_head.bump();
-                    let acroform_id  = write_head.bump();
-
-    
-                    let mut field = pdf.form_field(sig_annot_id);
-                    field.parent(first_page_id);
-                    field.pair(annot_key, annot_value);
-                    field.pair(widget_key, widget_value);
-                    field.pair(field_key, field_value);
-                    field.field_type(pdf_writer::types::FieldType::Signature);
-                    field.text_value(TextStr("etst"));
-                    field.partial_name(TextStr("Signature1"));
-                    field.pair(rect_key, rect_value);
-                    field.finish();
-
-                } else {
-                    println!("missing page_id");
-                }
-
-
-                
-            }
         }
 
         
+
+        // let first_page_id_option = match write_head.pages.get(0) {
+        //     Some(page) => Some(page.page_id),
+        //     None => None
+        // };
+
+        // if let Some(first_page_id) = first_page_id_option {
+        //     let sig_dict_id = write_head.bump();
+        //     let sig_widget_id = write_head.bump();
+        //     let acroform_id = write_head.bump();
+        //     let placeholder_bytes   = 8_192;
+        //     let placeholder_hex_len = placeholder_bytes * 2; // two hex chars per byte
+
+        //     let mut sigdict = secondary.indirect(sig_dict_id).dict();
+            
+        //     sigdict
+        //         .pair(Name(b"Filter"),    Name(b"Adobe.PPKLite"))
+        //         .pair(Name(b"SubFilter"), Name(b"adbe.pkcs7.detached"));
+
+        //     // Insert the ByteRange array and populate it with four zeroes
+        //     {
+        //         let mut br = sigdict.insert(Name(b"ByteRange")).array();
+        //         br.item(0);
+        //         br.item(0);
+        //         br.item(0);
+        //         br.item(0);
+        //     }
+
+        //     sigdict
+        //         .pair(Name(b"Contents"), Str(&vec![b'0'; placeholder_hex_len]))
+        //         .pair(Name(b"Reason"), Str(b"User accepted terms"))
+        //         .pair(Name(b"M"), Str(b"D:20250514120000Z"));
+        //     sigdict.finish();
+
+
+        //     let mut widget = secondary.indirect(sig_widget_id).dict();
+        //     widget
+        //         .pair(Name(b"Type"), Name(b"Annot"))
+        //         .pair(Name(b"Subtype"), Name(b"Widget"))
+        //         .pair(Name(b"P"), first_page_id)
+        //         .pair(Name(b"FT"), Name(b"Sig"))
+        //         .pair(Name(b"T"), Str(b"Signature1"))
+        //         .pair(Name(b"F"), 1); // invisible flag
+
+        //     {
+        //         let mut rect = widget.insert(Name(b"Rect")).array();
+        //         rect.item(0.0);
+        //         rect.item(0.0);
+        //         rect.item(0.0);
+        //         rect.item(0.0);
+        //     }
+
+        //     widget
+        //         .pair(Name(b"V"), sig_dict_id);
+        //     widget.finish();
+
+        //     let mut form = secondary.indirect(acroform_id).dict();
+        //     form
+        //         .pair(Name(b"SigFlags"),
+        //             (SigFlags::SIGNATURES_EXIST | SigFlags::APPEND_ONLY).bits() as i32);
+        //     {
+        //         let mut fields = form.insert(Name(b"Fields")).array();
+        //         fields.item(sig_widget_id);
+        //     }
+        //     form.finish();
+            
+        // } else {
+        //     println!("missing page_id");
+        // }
+         
 
         // append footer to each page
 
@@ -334,10 +421,12 @@ impl Doc {
             .count(write_head.pages.len() as i32);
 
         // Write the document catalog.
-        pdf.catalog(write_head.bump()).pages(page_tree_id);
+        pdf.catalog(catalog_id).pages(page_tree_id);
+
 
         // Finish and write the thing to a file.
-        let _ = std::fs::write("./chunks.pdf", pdf.finish());
+        // let _ = std::fs::write("./chunks.pdf", pdf.finish());
+        pdf.finish()
     }
 
     /// calls `render_text_block` method with no line indent

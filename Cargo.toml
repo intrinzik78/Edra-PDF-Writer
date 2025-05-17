@@ -12,3 +12,4 @@ derive_more = { version = "1.0.0", features = ["from"] }
 p12 = "0.6.3"
 pdf-writer = "0.13.0"
 serde_json = "1.0.140"
+lopdf = "0.36.0"
