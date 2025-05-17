@@ -1,6 +1,16 @@
-use lopdf::{Document, Object, Dictionary, Stream, dictionary};
+use lopdf::{Document, Object, dictionary};
 use pdf_writer::{ Chunk, Content, Name, Pdf, Rect };
 use serde::Deserialize;
+use openssl::{
+    hash::{Hasher, MessageDigest},
+    pkcs7::{Pkcs7, Pkcs7Flags},
+    pkcs12::Pkcs12,
+    pkey::PKey,
+    x509::X509,
+    stack::Stack
+};
+
+use std::error::Error;
 
 use crate::{
     traits::FontType, 
@@ -32,50 +42,72 @@ pub struct Doc {
 
 impl Doc {
 
-    pub fn add_sig_placeholder(buf: Vec<u8>) -> Vec<u8> {
+    fn sign_pdf_bytes(buf: &[u8],hex_start: usize,hex_end: usize, cert: X509, pkey: PKey<openssl::pkey::Private>, chain: Stack<X509>) -> Result<Vec<u8>, Box<dyn Error>> {   
+        let mut hasher = Hasher::new(MessageDigest::sha256())?;
+        hasher.update(&buf[..hex_start])?;
+        hasher.update(&buf[hex_end..])?;
+        let digest = hasher.finish()?;
+    
+        let flags = Pkcs7Flags::DETACHED | Pkcs7Flags::BINARY;
+        let pkcs7 = Pkcs7::sign(
+            &cert,
+            &pkey,
+            &chain,
+            &digest,
+            flags,
+        )?;
+
+        let der = pkcs7.to_der()?;
+        Ok(der)
+    }
+
+    pub fn add_sig_placeholder(buf: Vec<u8>, cert: X509, pkey: PKey<openssl::pkey::Private>, chain: Stack<X509>) -> Vec<u8> {
         let mut doc = Document::load_mem(&buf).unwrap();
         let page_id_map = doc.get_pages();   
         let page_id = page_id_map.get(&1).unwrap();  
-        let max_id = doc.max_id + 1;
-        let sig_dict_id   = max_id;
-        let widget_id     = max_id + 1;
-        let acroform_id   = max_id + 2;  
+        let sig_dict_id   = doc.new_object_id(); // advances max_id internally
+        let widget_id     = doc.new_object_id();
+        let acroform_id   = doc.new_object_id();
         let placeholder_len = 8192; // bytes
         let empty_contents = vec![0u8; placeholder_len];
+
         let sig_dict = dictionary! {
             "Type" => Object::Name(b"Sig".to_vec()),
             "Filter" => Object::Name(b"Adobe.PPKLite".to_vec()),
             "SubFilter" => Object::Name(b"adbe.pkcs7.detached".to_vec()),
             "ByteRange" => Object::Array(vec![0.into(), 0.into(), 0.into(), 0.into()]),
-            // Contents must be hex‐string: lopdf uses Streams for binary data
-            // but for simplicity you can store as a literal string of zeros and patch later
             "Contents" => Object::String(empty_contents, lopdf::StringFormat::Hexadecimal),
             "Reason" => Object::String(b"User accepted terms".to_vec(), lopdf::StringFormat::Literal),
             "M"      => Object::String(b"D:20250514120000Z".to_vec(), lopdf::StringFormat::Literal),
         };
         
-        doc.objects.insert((sig_dict_id,0), Object::Dictionary(sig_dict));   
+        doc.objects.insert(sig_dict_id, Object::Dictionary(sig_dict));   
+
         let widget_dict = dictionary! {
             "Type"   => Object::Name(b"Annot".to_vec()),
             "Subtype"=> Object::Name(b"Widget".to_vec()),
             "FT"     => Object::Name(b"Sig".to_vec()),
             "Rect"   => Object::Array(vec![0.into(),0.into(),0.into(),0.into()]),
             "F"      => <i32 as Into<Object>>::into(1),
-            "V"      => Object::Reference((sig_dict_id, 0)),
-            // link to the page object; assume your page is object 3
+            "V"      => Object::Reference(sig_dict_id),
             "P"      => Object::Reference((page_id.0, 0)),
         };
-        doc.objects.insert((widget_id,0), Object::Dictionary(widget_dict));  
+
+        doc.objects.insert(widget_id, Object::Dictionary(widget_dict));  
+
         let acroform_dict = dictionary! {
             "SigFlags" => <i32 as Into<Object>>::into(3),
-            "Fields"   => Object::Array(vec![Object::Reference((widget_id,0))]),
+            "Fields"   => Object::Array(vec![Object::Reference(widget_id)]),
         };
-        doc.objects.insert((acroform_id,0), Object::Dictionary(acroform_dict));  
+
+        doc.objects.insert(acroform_id,Object::Dictionary(acroform_dict));
+
         let catalog_id = doc.trailer.get(b"Root")
             .and_then(Object::as_reference)
             .unwrap();
+
         if let Object::Dictionary(ref mut catalog) = doc.objects.get_mut(&catalog_id).unwrap() {
-            catalog.set("AcroForm", Object::Reference((acroform_id,0)));
+            catalog.set("AcroForm", Object::Reference(acroform_id));
         }
         
         let mut buf = Vec::new();
@@ -85,7 +117,68 @@ impl Doc {
             Err(e) => panic!("{e}")
         };
 
-         buf
+        let contents_tag = b"/Contents<";
+        let contents_pos = buf
+            .windows(contents_tag.len())
+            .position(|w| w == contents_tag)
+            .expect("`/Contents<` not found in PDF");
+        let hex_start = contents_pos + contents_tag.len();
+        let hex_end   = hex_start + placeholder_len * 2; // end index of hex digits
+
+        let br_tag = b"/ByteRange[";
+        let br_pos = buf
+            .windows(br_tag.len())
+            .position(|w| w == br_tag)
+            .expect("`/ByteRange[` not found in PDF");
+        let br_start = br_pos + br_tag.len();
+
+        let br_end = buf[br_start..]
+            .iter()
+            .position(|&b| b == b']')
+            .expect("`]` after ByteRange not found")
+            + br_start;
+
+        let offset1 = 0;
+        let offset2 = hex_start;
+        let offset3 = hex_end;
+        let offset4 = buf.len() - hex_end;
+
+        let new_br = format!("{} {} {} {}", offset1, offset2, offset3, offset4);
+        println!("{}", new_br);
+        let mut new_br_bytes = new_br.into_bytes();
+
+        let br_len = br_end - br_start;
+        new_br_bytes.resize(br_len, b' ');
+
+        let mut doc = Document::load_mem(&buf).unwrap();
+    
+        if let Object::Dictionary(ref mut d) = doc.objects.get_mut(&sig_dict_id).unwrap() {
+            d.set("ByteRange", Object::Array(vec![
+                Object::Integer(0),
+                Object::Integer(offset2 as i64),
+                Object::Integer(offset3 as i64),
+                Object::Integer(offset4 as i64),
+            ]));
+        }
+
+        let mut buf = Vec::new();
+
+        match doc.save_to(&mut buf) {
+            Ok(_) => {},
+            Err(e) => panic!("{e}")
+        };
+
+        let sig_der  = match Doc::sign_pdf_bytes(&buf, hex_start, hex_end, cert, pkey, chain) {
+            Ok(der) => der,
+            Err(e) => panic!("{e}")
+        };
+
+        let hex_sig: String = hex::encode(&sig_der);
+        let mut hex_sig_bytes = hex_sig.into_bytes();
+        hex_sig_bytes.resize(placeholder_len * 2, b'0');
+        buf[hex_start..hex_start + hex_sig_bytes.len()].copy_from_slice(&hex_sig_bytes);
+
+        buf
     }
 
     /// applies an offset to each line of text based on the JSON `textAlign` field
