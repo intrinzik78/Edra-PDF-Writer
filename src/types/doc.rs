@@ -10,7 +10,7 @@ use openssl::{
     stack::Stack
 };
 
-use std::error::Error;
+use std::{error::Error, str};
 
 use crate::{
     traits::FontType, 
@@ -42,12 +42,12 @@ pub struct Doc {
 
 impl Doc {
 
-    fn sign_pdf_bytes(buf: &[u8],hex_start: usize,hex_end: usize, cert: X509, pkey: PKey<openssl::pkey::Private>, chain: Stack<X509>) -> Result<Vec<u8>, Box<dyn Error>> {   
+    fn sign_pdf_bytes(buf: &[u8], hex_start: usize, hex_end: usize, cert: X509, pkey: PKey<openssl::pkey::Private>, chain: Stack<X509>) -> Result<Vec<u8>, Box<dyn Error>> {   
         let mut hasher = Hasher::new(MessageDigest::sha256())?;
         hasher.update(&buf[..hex_start])?;
         hasher.update(&buf[hex_end..])?;
         let digest = hasher.finish()?;
-    
+
         let flags = Pkcs7Flags::DETACHED | Pkcs7Flags::BINARY;
         let pkcs7 = Pkcs7::sign(
             &cert,
@@ -144,11 +144,23 @@ impl Doc {
         let offset4 = buf.len() - hex_end;
 
         let new_br = format!("{} {} {} {}", offset1, offset2, offset3, offset4);
-        println!("{}", new_br);
         let mut new_br_bytes = new_br.into_bytes();
+        println!("{} {} {} {}", offset1, offset2, offset3, offset4);
 
         let br_len = br_end - br_start;
         new_br_bytes.resize(br_len, b' ');
+
+        let sig_der  = match Doc::sign_pdf_bytes(&buf, hex_start, hex_end, cert, pkey, chain) {
+            Ok(der) => der,
+            Err(e) => panic!("{e}")
+        };
+
+        let hex_sig: String = hex::encode(&sig_der);
+        let mut hex_sig_bytes = hex_sig.into_bytes();
+        hex_sig_bytes.resize(placeholder_len * 2, b'0');
+
+        buf[hex_start..hex_start + hex_sig_bytes.len()].copy_from_slice(&hex_sig_bytes);
+        // let slice = &buf[offset2..offset3];
 
         let mut doc = Document::load_mem(&buf).unwrap();
     
@@ -161,24 +173,14 @@ impl Doc {
             ]));
         }
 
-        let mut buf = Vec::new();
+        let mut new_buf = Vec::new();
 
-        match doc.save_to(&mut buf) {
+        match doc.save_to(&mut new_buf) {
             Ok(_) => {},
             Err(e) => panic!("{e}")
-        };
+        };  
 
-        let sig_der  = match Doc::sign_pdf_bytes(&buf, hex_start, hex_end, cert, pkey, chain) {
-            Ok(der) => der,
-            Err(e) => panic!("{e}")
-        };
-
-        let hex_sig: String = hex::encode(&sig_der);
-        let mut hex_sig_bytes = hex_sig.into_bytes();
-        hex_sig_bytes.resize(placeholder_len * 2, b'0');
-        buf[hex_start..hex_start + hex_sig_bytes.len()].copy_from_slice(&hex_sig_bytes);
-
-        buf
+        new_buf
     }
 
     /// applies an offset to each line of text based on the JSON `textAlign` field
