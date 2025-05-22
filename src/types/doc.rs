@@ -4,7 +4,7 @@ use serde::Deserialize;
 use openssl::{
     hash::{Hasher, MessageDigest},
     pkcs7::{Pkcs7, Pkcs7Flags},
-    pkcs12::Pkcs12,
+    // pkcs12::Pkcs12,
     pkey::PKey,
     x509::X509,
     stack::Stack
@@ -43,7 +43,8 @@ pub struct Doc {
 
 impl Doc {
 
-    fn sign_pdf_bytes(buf: &[u8], hex_start: usize, hex_end: usize, cert: X509, pkey: PKey<openssl::pkey::Private>, chain: Stack<X509>) -> Result<Vec<u8>> {   
+    /// hashes a byte slice with the provided certs
+    fn hash_document(buf: &[u8], hex_start: usize, hex_end: usize, cert: &X509, pkey: &PKey<openssl::pkey::Private>, chain: &Stack<X509>) -> Result<Vec<u8>> {   
         let mut hasher = Hasher::new(MessageDigest::sha256())?;
         hasher.update(&buf[..hex_start])?;
         hasher.update(&buf[hex_end..])?;
@@ -51,9 +52,9 @@ impl Doc {
 
         let flags = Pkcs7Flags::DETACHED | Pkcs7Flags::BINARY;
         let pkcs7 = Pkcs7::sign(
-            &cert,
-            &pkey,
-            &chain,
+            cert,
+            pkey,
+            chain,
             &digest,
             flags,
         )?;
@@ -62,8 +63,13 @@ impl Doc {
         Ok(der)
     }
 
-    pub fn add_sig_placeholder(buf: Vec<u8>, cert: X509, pkey: PKey<openssl::pkey::Private>, chain: Stack<X509>) -> Result<Vec<u8>> {
+    /// accepts a <u8> buffer, serializes it into a lopdf Document, calculates the byte hash and applies a signature
+    pub fn sign_document(buf: &Vec<u8>, cert: &X509, pkey: &PKey<openssl::pkey::Private>, chain: &Stack<X509>) -> Result<Vec<u8>> {
+
+        // serializes the buffer into a lopdf Document
         let mut doc = Document::load_mem(&buf)?;
+
+        // gets first page, but this should probably reference the last page and it is detached f
         let page_id_map = doc.get_pages();   
         let page_id = match page_id_map.get(&1) {
             Some(v) => v,
@@ -75,6 +81,7 @@ impl Doc {
         let placeholder_len = 8192; // bytes
         let empty_contents = vec![0u8; placeholder_len];
 
+        // detached signature dictionary
         let sig_dict = dictionary! {
             "Type" => Object::Name(b"Sig".to_vec()),
             "Filter" => Object::Name(b"Adobe.PPKLite".to_vec()),
@@ -87,18 +94,39 @@ impl Doc {
         
         doc.objects.insert(sig_dict_id, Object::Dictionary(sig_dict));   
 
+        // signature widget
         let widget_dict = dictionary! {
             "Type"   => Object::Name(b"Annot".to_vec()),
             "Subtype"=> Object::Name(b"Widget".to_vec()),
             "FT"     => Object::Name(b"Sig".to_vec()),
-            "Rect"   => Object::Array(vec![0.into(),0.into(),0.into(),0.into()]),
-            "F"      => <i32 as Into<Object>>::into(1),
+            "Rect"   => Object::Array(vec![50.into(),100.into(),250.into(),350.into()]),
+            "Border" => Object::Array(vec![0.into(), 0.into(), 1.into()]),
+            "C"      => Object::Array(vec![0.0.into(), 0.0.into(), 0.0.into()]),
+            "F"      => <i32 as Into<Object>>::into(4),
             "V"      => Object::Reference(sig_dict_id),
             "P"      => Object::Reference(*page_id),
         };
+        
+        let pg: &mut Object = doc.objects.get_mut(&page_id).unwrap();
+        if let Object::Dictionary(ref mut dict) = pg {
+            // grab or create an Annots array
+            let mut annots = match dict.get(b"Annots") {
+                Ok(Object::Array(arr)) => arr.clone(),
+                _ => Vec::new(),
+            };
+            // add our widget
+            annots.push(Object::Reference(widget_id));
+            dict.set("Annots", Object::Array(annots));
+        } else {
+            panic!("Page object was not a dictionary");
+        }
+        
+
+
 
         doc.objects.insert(widget_id, Object::Dictionary(widget_dict));  
 
+        // acroform dictionary
         let acroform_dict = dictionary! {
             "SigFlags" => <i32 as Into<Object>>::into(3),
             "Fields"   => Object::Array(vec![Object::Reference(widget_id)]),
@@ -153,16 +181,12 @@ impl Doc {
         let br_len = br_end - br_start;
         new_br_bytes.resize(br_len, b' ');
 
-        let sig_der  = match Doc::sign_pdf_bytes(&buf, hex_start, hex_end, cert, pkey, chain) {
+        let sig_der  = match Doc::hash_document(&buf, hex_start, hex_end, cert, pkey, chain) {
             Ok(der) => der,
             Err(e) => panic!("{e}")
         };
 
         let hex_sig: String = hex::encode(&sig_der);
-        // let hex_sig_bytes = hex_sig.into_bytes();
-        // hex_sig_bytes.resize(placeholder_len * 2, b'0');
-
-        // buf[hex_start..hex_start + hex_sig_bytes.len()].copy_from_slice(&hex_sig_bytes);
 
         let mut doc = Document::load_mem(&buf).unwrap();
     
