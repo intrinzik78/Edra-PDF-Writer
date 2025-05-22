@@ -10,14 +10,13 @@ use openssl::{
     stack::Stack
 };
 
-use std::{error::Error, str};
-
 use crate::{
     traits::FontType, 
     types::{ 
         AttributeField, 
         BlockType, 
         ContentField, 
+        Error,
         Font, 
         FontFamily,
         FontReference,
@@ -29,6 +28,8 @@ use crate::{
         Word,
         Writer
  }};
+
+type Result<T> = std::result::Result<T,Error>;
 
 /// # Main entry point of the library
 #[derive(Debug,Deserialize)]
@@ -42,7 +43,7 @@ pub struct Doc {
 
 impl Doc {
 
-    fn sign_pdf_bytes(buf: &[u8], hex_start: usize, hex_end: usize, cert: X509, pkey: PKey<openssl::pkey::Private>, chain: Stack<X509>) -> Result<Vec<u8>, Box<dyn Error>> {   
+    fn sign_pdf_bytes(buf: &[u8], hex_start: usize, hex_end: usize, cert: X509, pkey: PKey<openssl::pkey::Private>, chain: Stack<X509>) -> Result<Vec<u8>> {   
         let mut hasher = Hasher::new(MessageDigest::sha256())?;
         hasher.update(&buf[..hex_start])?;
         hasher.update(&buf[hex_end..])?;
@@ -61,11 +62,14 @@ impl Doc {
         Ok(der)
     }
 
-    pub fn add_sig_placeholder(buf: Vec<u8>, cert: X509, pkey: PKey<openssl::pkey::Private>, chain: Stack<X509>) -> Vec<u8> {
-        let mut doc = Document::load_mem(&buf).unwrap();
+    pub fn add_sig_placeholder(buf: Vec<u8>, cert: X509, pkey: PKey<openssl::pkey::Private>, chain: Stack<X509>) -> Result<Vec<u8>> {
+        let mut doc = Document::load_mem(&buf)?;
         let page_id_map = doc.get_pages();   
-        let page_id = page_id_map.get(&1).unwrap();  
-        let sig_dict_id   = doc.new_object_id(); // advances max_id internally
+        let page_id = match page_id_map.get(&1) {
+            Some(v) => v,
+            None => return Err(Error::MissingDocumentPage)
+        };
+        let sig_dict_id   = doc.new_object_id();
         let widget_id     = doc.new_object_id();
         let acroform_id   = doc.new_object_id();
         let placeholder_len = 8192; // bytes
@@ -90,7 +94,7 @@ impl Doc {
             "Rect"   => Object::Array(vec![0.into(),0.into(),0.into(),0.into()]),
             "F"      => <i32 as Into<Object>>::into(1),
             "V"      => Object::Reference(sig_dict_id),
-            "P"      => Object::Reference((page_id.0, 0)),
+            "P"      => Object::Reference(*page_id),
         };
 
         doc.objects.insert(widget_id, Object::Dictionary(widget_dict));  
@@ -102,20 +106,22 @@ impl Doc {
 
         doc.objects.insert(acroform_id,Object::Dictionary(acroform_dict));
 
-        let catalog_id = doc.trailer.get(b"Root")
-            .and_then(Object::as_reference)
-            .unwrap();
+        let catalog_id = doc.trailer
+            .get(b"Root")
+            .and_then(Object::as_reference)?;
 
-        if let Object::Dictionary(ref mut catalog) = doc.objects.get_mut(&catalog_id).unwrap() {
+        let catalog_ref = doc.objects
+            .get_mut(&catalog_id)
+            .ok_or(Error::MissingDocumentObject)?;
+
+        if let Object::Dictionary(ref mut catalog) = catalog_ref {
             catalog.set("AcroForm", Object::Reference(acroform_id));
+        } else {
+            return Err(Error::MissingDocumentObject);
         }
         
         let mut buf = Vec::new();
-
-        match doc.save_to(&mut buf) {
-            Ok(_) => {},
-            Err(e) => panic!("{e}")
-        };
+        doc.save_to(&mut buf)?;
 
         let contents_tag = b"/Contents<";
         let contents_pos = buf
@@ -131,7 +137,6 @@ impl Doc {
             .position(|w| w == br_tag)
             .expect("`/ByteRange[` not found in PDF");
         let br_start = br_pos + br_tag.len();
-
         let br_end = buf[br_start..]
             .iter()
             .position(|&b| b == b']')
@@ -145,8 +150,6 @@ impl Doc {
 
         let new_br = format!("{} {} {} {}", offset1, offset2, offset3, offset4);
         let mut new_br_bytes = new_br.into_bytes();
-        println!("{} {} {} {}", offset1, offset2, offset3, offset4);
-
         let br_len = br_end - br_start;
         new_br_bytes.resize(br_len, b' ');
 
@@ -156,11 +159,10 @@ impl Doc {
         };
 
         let hex_sig: String = hex::encode(&sig_der);
-        let mut hex_sig_bytes = hex_sig.into_bytes();
-        hex_sig_bytes.resize(placeholder_len * 2, b'0');
+        // let hex_sig_bytes = hex_sig.into_bytes();
+        // hex_sig_bytes.resize(placeholder_len * 2, b'0');
 
-        buf[hex_start..hex_start + hex_sig_bytes.len()].copy_from_slice(&hex_sig_bytes);
-        // let slice = &buf[offset2..offset3];
+        // buf[hex_start..hex_start + hex_sig_bytes.len()].copy_from_slice(&hex_sig_bytes);
 
         let mut doc = Document::load_mem(&buf).unwrap();
     
@@ -171,16 +173,13 @@ impl Doc {
                 Object::Integer(offset3 as i64),
                 Object::Integer(offset4 as i64),
             ]));
+            d.set("Contents",Object::String(hex_sig.into_bytes(), lopdf::StringFormat::Hexadecimal));
         }
 
         let mut new_buf = Vec::new();
-
-        match doc.save_to(&mut new_buf) {
-            Ok(_) => {},
-            Err(e) => panic!("{e}")
-        };  
-
-        new_buf
+        doc.save_to(&mut new_buf)?;
+        
+        Ok(new_buf)
     }
 
     /// applies an offset to each line of text based on the JSON `textAlign` field
