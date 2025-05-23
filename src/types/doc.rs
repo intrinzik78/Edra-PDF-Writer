@@ -70,11 +70,11 @@ impl Doc {
         let mut doc = Document::load_mem(&buf)?;
 
         // gets first page, but this should probably reference the last page and it is detached f
-        let page_id_map = doc.get_pages();   
-        let page_id = match page_id_map.get(&1) {
-            Some(v) => v,
-            None => return Err(Error::MissingDocumentPage)
-        };
+        // let page_id_map = doc.get_pages();   
+        // let page_id = match page_id_map.get(&1) {
+        //     Some(v) => v,
+        //     None => return Err(Error::MissingDocumentPage)
+        // };
         let sig_dict_id   = doc.new_object_id();
         let widget_id     = doc.new_object_id();
         let acroform_id   = doc.new_object_id();
@@ -95,36 +95,34 @@ impl Doc {
         doc.objects.insert(sig_dict_id, Object::Dictionary(sig_dict));   
 
         // signature widget
-        let widget_dict = dictionary! {
-            "Type"   => Object::Name(b"Annot".to_vec()),
-            "Subtype"=> Object::Name(b"Widget".to_vec()),
-            "FT"     => Object::Name(b"Sig".to_vec()),
-            "Rect"   => Object::Array(vec![50.into(),100.into(),250.into(),350.into()]),
-            "Border" => Object::Array(vec![0.into(), 0.into(), 1.into()]),
-            "C"      => Object::Array(vec![0.0.into(), 0.0.into(), 0.0.into()]),
-            "F"      => <i32 as Into<Object>>::into(4),
-            "V"      => Object::Reference(sig_dict_id),
-            "P"      => Object::Reference(*page_id),
-        };
+        // let widget_dict = dictionary! {
+        //     "Type"   => Object::Name(b"Annot".to_vec()),
+        //     "Subtype"=> Object::Name(b"Widget".to_vec()),
+        //     "FT"     => Object::Name(b"Sig".to_vec()),
+        //     "Rect"   => Object::Array(vec![50.into(),100.into(),250.into(),350.into()]),
+        //     "Border" => Object::Array(vec![0.into(), 0.into(), 1.into()]),
+        //     "C"      => Object::Array(vec![0.0.into(), 0.0.into(), 0.0.into()]),
+        //     "F"      => <i32 as Into<Object>>::into(4),
+        //     "V"      => Object::Reference(sig_dict_id),
+        //     "P"      => Object::Reference(*page_id),
+        // };
         
-        let pg: &mut Object = doc.objects.get_mut(&page_id).unwrap();
-        if let Object::Dictionary(ref mut dict) = pg {
-            // grab or create an Annots array
-            let mut annots = match dict.get(b"Annots") {
-                Ok(Object::Array(arr)) => arr.clone(),
-                _ => Vec::new(),
-            };
-            // add our widget
-            annots.push(Object::Reference(widget_id));
-            dict.set("Annots", Object::Array(annots));
-        } else {
-            panic!("Page object was not a dictionary");
-        }
+        // let pg: &mut Object = doc.objects.get_mut(&page_id).unwrap();
+        // if let Object::Dictionary(ref mut dict) = pg {
+        //     // grab or create an Annots array
+        //     let mut annots = match dict.get(b"Annots") {
+        //         Ok(Object::Array(arr)) => arr.clone(),
+        //         _ => Vec::new(),
+        //     };
+        //     // add our widget
+        //     annots.push(Object::Reference(widget_id));
+        //     dict.set("Annots", Object::Array(annots));
+        // } else {
+        //     panic!("Page object was not a dictionary");
+        // }
         
 
-
-
-        doc.objects.insert(widget_id, Object::Dictionary(widget_dict));  
+        // doc.objects.insert(widget_id, Object::Dictionary(widget_dict));  
 
         // acroform dictionary
         let acroform_dict = dictionary! {
